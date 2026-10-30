@@ -1050,7 +1050,7 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                 const bg = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mats[vis.value]);
                 bg.frustumCulled = false;
                 bgScene.add(bg);
-                let pr = Math.min(devicePixelRatio || 1, 1.5);
+                let pr = Math.min(devicePixelRatio || 1, 1);
 
                 function resize() {
                     renderer.setPixelRatio(pr);
