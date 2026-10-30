@@ -579,8 +579,13 @@
                         <button @click="mv(i,1)" :disabled="i===order.length-1" aria-label="Move down">↓</button>
                     </li>
                 </ol>
-                <label>Change every (seconds)</label>
-                <input type="number" min="1" max="3600" step="1" v-model.number="secs" aria-label="Seconds per visual"
+                <label>
+                    <span>Switching mode</span>
+                    <button @click="mode = mode === 'bpm' ? 'timed' : 'bpm'">
+                        {{ mode === 'bpm' ? 'BPM Change' : 'Timed' }}
+                    </button>
+                </label>
+                <label v-if="mode === 'timed'">Change every (seconds)</label>                <input type="number" min="1" max="3600" step="1" v-model.number="secs" aria-label="Seconds per visual"
                     style="width: 100%; padding: 6px 10px; background: rgba(255,255,255,0.06); border: 1px solid var(--edge); border-radius: 8px; color: var(--fg); font: inherit; margin-top: 4px;">
 
                 <label>Transition (seconds)</label>
@@ -1147,6 +1152,70 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                     }
                     if (ctx.state === "suspended") ctx.resume();
                 }
+
+                const BPM_SWITCH_THRESHOLD = 15;
+                const BPM_STABLE_MS = 5000;
+                const BPM_SWITCH_COOLDOWN = 20000;
+
+                let lockedSongBpm = 0;
+                let pendingSongBpm = 0;
+                let pendingSince = 0;
+                let lastBpmSwitch = -Infinity;
+
+                function resetBpmSwitch() {
+                    lockedSongBpm = 0;
+                    pendingSongBpm = 0;
+                    pendingSince = 0;
+                    lastBpmSwitch = -Infinity;
+                }
+
+                function checkSongBpm(detected, now) {
+                    if (!shuffle.value || mode.value !== "bpm" ||
+                        !Number.isFinite(detected) ||
+                        detected < 70 || detected > 190) return;
+
+                    // Establish the first song's tempo without switching.
+                    if (!lockedSongBpm) {
+                        lockedSongBpm = detected;
+                        return;
+                    }
+
+                    // Ignore half/double-time detection mistakes.
+                    if (Math.abs(detected * 2 - lockedSongBpm) < 6 ||
+                        Math.abs(detected / 2 - lockedSongBpm) < 6) {
+                        return;
+                    }
+
+                    // If we return to the original tempo, cancel.
+                    if (Math.abs(detected - lockedSongBpm) <
+                        BPM_SWITCH_THRESHOLD) {
+                        pendingSongBpm = 0;
+                        pendingSince = 0;
+                        return;
+                    }
+
+                    // A new candidate must agree with previous readings.
+                    if (!pendingSongBpm ||
+                        Math.abs(detected - pendingSongBpm) > 5) {
+                        pendingSongBpm = detected;
+                        pendingSince = now;
+                        return;
+                    }
+
+                    // Only switch after a sustained new tempo.
+                    if (now - pendingSince >= BPM_STABLE_MS &&
+                        now - lastBpmSwitch >= BPM_SWITCH_COOLDOWN) {
+
+                        if (!tr) {
+                            lockedSongBpm = pendingSongBpm;
+                            pendingSongBpm = 0;
+                            pendingSince = 0;
+                            lastBpmSwitch = now;
+                            advance();
+                        }
+                    }
+                }
+
                 const RING = 800,
                     ring = new Float32Array(RING);
                 let rp = 0,
@@ -1167,6 +1236,9 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                         const o = new Float32Array(RING);
                         for (let i = 0; i < RING; i++) o[i] = ring[(rp + i) % RING];
                         const e = estimate(o);
+                        if (s > 0.015) {
+                            checkSongBpm(e.bpm, now);
+                        }
                         if (!liveBpm) liveBpm = e.bpm;
                         else if (Math.abs(e.bpm - liveBpm) / liveBpm < .06) {
                             liveBpm += (e.bpm - liveBpm) * .3;
@@ -1196,6 +1268,8 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                     cand = 0;
                     info = null;
                     token++;
+                    resetBpmSwitch();
+                    ring.fill(0);
                 }
                 async function playFile(file) {
                     stop();
@@ -1271,6 +1345,7 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                 const sh0 = JSON.parse(localStorage.getItem("ks-shuf") || "null") || {};
                 const order = ref(Array.isArray(sh0.order) ? sh0.order.filter(n => idxOf(n) >= 0) : DEF.slice());
                 if (order.value.length < 2) order.value = DEF.slice();
+                const mode = ref(sh0.mode === "bpm" ? "bpm" : "timed");
                 const secs = ref(sh0.secs || 20),
                     rand = ref(!!sh0.rand),
                     off = ref(Array.isArray(sh0.off) ? sh0.off.filter(n => idxOf(n) >= 0) : []),
@@ -1278,12 +1353,13 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                     shuffle = ref(false),
                     dragI = ref(-1),
                     overI = ref(-1);
-                watch([order, secs, rand, off, fade], () => localStorage.setItem("ks-shuf", JSON.stringify({
+                watch([order, secs, rand, off, fade, mode], () => localStorage.setItem("ks-shuf", JSON.stringify({
                     order: order.value,
                     secs: secs.value,
                     rand: rand.value,
                     off: off.value,
-                    fade: fade.value
+                    fade: fade.value,
+                    mode: mode.value
                 })), {
                     deep: true
                 });
@@ -1327,7 +1403,12 @@ vec3 fin(vec3 c,vec2 u){ c*=1.+.025*k*e3.w; c=1.-exp(-c*1.5); c=mix(vec3(dot(c,v
                     if (nx >= 0) setVis(nx, fade.value);
                 }
                 watch(shuffle, on => {
-                    if (on) advance();
+                    resetBpmSwitch();
+                    if (on && mode.value === "timed") advance();
+                });
+                watch(mode, () => {
+                    resetBpmSwitch();
+                    shufNext = performance.now() + secs.value * 1000;
                 });
                 const dragStart = (i, e) => {
                     dragI.value = i;
@@ -1462,7 +1543,7 @@ void main(){
                 }
 
                 function renderMain(now) {
-                    if (shuffle.value && !tr && now > shufNext) advance();
+                    if (shuffle.value && mode.value === "timed" && !tr && now > shufNext) advance();
                     if (!tr) {
                         renderer.render(bgScene, bgCam);
                         return;
@@ -1733,6 +1814,7 @@ void main(){
                     order,
                     secs,
                     rand,
+                    mode,
                     dragI,
                     overI,
                     dragStart,
